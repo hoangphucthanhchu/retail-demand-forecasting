@@ -74,7 +74,7 @@ class M5DataLoader:
     
     def reshape_sales_to_long(self, sales: pd.DataFrame, calendar: pd.DataFrame) -> pd.DataFrame:
         """
-        Reshape sales data from wide to long format
+        Reshape sales data from wide to long format (memory-optimized)
         
         Args:
             sales: Sales dataframe in wide format
@@ -83,30 +83,70 @@ class M5DataLoader:
         Returns:
             Long format dataframe with columns: id, date, demand
         """
-        logger.info("Reshaping sales data to long format")
+        logger.info("Reshaping sales data to long format (memory-optimized)")
         
         # Get date columns (d_1, d_2, ..., d_1913)
         date_cols = [col for col in sales.columns if col.startswith('d_')]
+        id_cols = [col for col in sales.columns if col not in date_cols]
+        n_days = len(date_cols)
+        n_products = len(sales)
         
-        # Melt sales data
-        sales_long = sales.melt(
-            id_vars=[col for col in sales.columns if col not in date_cols],
-            value_vars=date_cols,
-            var_name='d',
-            value_name='demand'
+        logger.info(f"Processing {n_products} products × {n_days} days = {n_products * n_days:,} rows")
+        
+        # Optimize data types before reshaping to reduce memory
+        # Convert demand columns to smaller integer type if possible
+        sales_optimized = sales.copy()
+        for col in date_cols:
+            # Try to downcast to smaller integer type
+            sales_optimized[col] = pd.to_numeric(sales_optimized[col], downcast='integer')
+        
+        # Convert id columns to categorical to save memory
+        for col in id_cols:
+            if sales_optimized[col].dtype == 'object':
+                sales_optimized[col] = sales_optimized[col].astype('category')
+        
+        # Use stack() instead of melt() - more memory efficient
+        # Set id columns as index, stack date columns, then reset index
+        sales_long = (
+            sales_optimized
+            .set_index(id_cols)[date_cols]
+            .stack(future_stack=True)
+            .reset_index()
         )
         
-        # Map d_* to actual dates
-        d_to_date = dict(zip(
-            [f'd_{i}' for i in range(1, len(calendar) + 1)],
-            calendar['date'].values
-        ))
+        # Rename columns
+        sales_long.columns = id_cols + ['d', 'demand']
         
-        sales_long['date'] = sales_long['d'].map(d_to_date)
-        sales_long = sales_long.drop('d', axis=1)
-        sales_long = sales_long.sort_values(['id', 'date']).reset_index(drop=True)
+        # Extract day number from 'd_1', 'd_2', etc. and map to dates using integer index
+        # This is more memory efficient than string mapping
+        sales_long['day_num'] = sales_long['d'].str.replace('d_', '').astype(int)
         
-        logger.info(f"Reshaped to {len(sales_long)} rows")
+        # Map day numbers to dates using integer indexing (more efficient than dict mapping)
+        # Ensure calendar is sorted by date order
+        calendar_sorted = calendar.sort_values('date').reset_index(drop=True)
+        date_array = calendar_sorted['date'].values
+        
+        # Use iloc for integer-based indexing (no dict needed)
+        # day_num is 1-indexed, so subtract 1 for 0-indexed array access
+        sales_long['date'] = pd.Series(
+            date_array[sales_long['day_num'].values - 1],
+            index=sales_long.index,
+            dtype='datetime64[ns]'
+        )
+        
+        # Drop intermediate columns in one go
+        sales_long = sales_long.drop(columns=['d', 'day_num'])
+        
+        # Optimize demand column data type
+        if sales_long['demand'].dtype in ['int64', 'float64']:
+            sales_long['demand'] = pd.to_numeric(sales_long['demand'], downcast='integer')
+        
+        # Sort and reset index (do this last to minimize copies)
+        sales_long = sales_long.sort_values(['id', 'date'], ignore_index=True)
+        
+        logger.info(f"Reshaped to {len(sales_long):,} rows")
+        logger.info(f"Memory usage: {sales_long.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
+        
         return sales_long
     
     def create_base_dataset(self) -> pd.DataFrame:
