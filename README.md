@@ -21,7 +21,7 @@ This project implements a complete demand forecasting system with:
 - **Data Pipeline**: Load and preprocess M5 Forecasting dataset
 - **Feature Engineering**: Create lag features, rolling statistics, calendar features, price features
 - **Model Training**: XGBoost and LightGBM with hyperparameter tuning
-- **Evaluation**: Multiple metrics (RMSE, MAE, MAPE, WMAPE)
+- **Evaluation**: Multiple metrics (RMSE, MAE, MAPE, WMAPE) and **baseline comparisons** on validation and test sets
 - **Inference Pipeline**: Production-ready prediction pipeline
 - **Testing**: Unit tests for main components
 
@@ -47,7 +47,8 @@ deman-forecasting/
 │   ├── models/
 │   │   └── trainer.py           # Model training
 │   ├── evaluation/
-│   │   └── metrics.py           # Evaluation metrics
+│   │   ├── metrics.py           # Evaluation metrics
+│   │   └── baselines.py         # Baseline forecasts vs ML (same metrics)
 │   ├── pipeline/
 │   │   ├── train_pipeline.py    # Training pipeline
 │   │   └── inference.py         # Inference pipeline
@@ -96,11 +97,16 @@ Place these files in the `data/raw/` directory.
 Run the complete training pipeline:
 
 ```python
+import pandas as pd
 from src.pipeline.train_pipeline import TrainingPipeline
 
 pipeline = TrainingPipeline(config_path='configs/config.yaml')
 models, results = pipeline.run()
+# results: baseline_* keys plus xgboost / lightgbm (same metric keys)
+comparison_df = pd.DataFrame(results).T
 ```
+
+Baselines are computed inside the training pipeline (logged on validation and test, and merged into `results`). See [Evaluation](#evaluation).
 
 Or from command line:
 
@@ -136,6 +142,8 @@ Run notebooks to explore data and train models:
 ```bash
 jupyter notebook notebooks/
 ```
+
+`02_training_and_evaluation.ipynb` runs the full pipeline and builds a comparison table (baselines and XGBoost/LightGBM) from `results`.
 
 ## Dataset
 
@@ -182,16 +190,33 @@ The dataset is reshaped from wide format (columns d_1, d_2, ...) to long format 
 
 ## Evaluation
 
-Metrics used:
+Metrics used (lower is better for all):
 
 - **RMSE**: Root Mean Squared Error
 - **MAE**: Mean Absolute Error
 - **MAPE**: Mean Absolute Percentage Error
 - **WMAPE**: Weighted Mean Absolute Percentage Error
 
-Evaluation is performed on:
-- Validation set (during training)
-- Test set (final evaluation)
+Metrics are configured in `configs/config.yaml` under `evaluation.metrics`.
+
+### Baseline comparisons
+
+Alongside XGBoost and LightGBM, the training pipeline evaluates simple **reference baselines** using the same metrics. They reuse columns produced by feature engineering so horizons align with the supervised setup. Missing values in baseline inputs are filled with `0`, consistent with `fillna(0)` on model features.
+
+| Key in `results` | Definition |
+|------------------|------------|
+| `baseline_naive_lag1` | Forecast = previous-day demand (`demand_lag_1`) |
+| `baseline_seasonal_naive_lag7` | Forecast = same weekday last week (`demand_lag_7`) |
+| `baseline_rolling_mean_7` | Forecast = 7-day rolling mean of demand (`demand_rolling_mean_7`) |
+
+A baseline is skipped if its column is absent (for example, if lags are changed in config).
+
+Implementation: `src/evaluation/baselines.py`. Logging: validation baselines are printed before ML models; test baselines are printed first in the test block, then each trained model.
+
+### Where evaluation runs
+
+- **Validation set**: During `train()` — baselines plus each model.
+- **Test set**: In `evaluate()` — baselines plus each model. The `results` dict returned by `pipeline.run()` includes all of the above for easy tables (for example `pd.DataFrame(results).T` in `notebooks/02_training_and_evaluation.ipynb`).
 
 ## Testing
 
