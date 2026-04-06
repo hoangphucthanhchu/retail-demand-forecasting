@@ -4,7 +4,7 @@ Data loading utilities for M5 Forecasting dataset
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
@@ -13,17 +13,41 @@ logger = logging.getLogger(__name__)
 class M5DataLoader:
     """Loader for M5 Forecasting dataset"""
     
-    def __init__(self, data_path: str = "data/raw"):
+    def __init__(self, data_path: str = "data/raw", subsample: Optional[Dict[str, Any]] = None):
         """
         Initialize M5 Data Loader
         
         Args:
             data_path: Path to raw data directory
+            subsample: Optional ``data.subsample`` dict from config (applied before wide→long).
         """
         self.data_path = Path(data_path)
+        self.subsample = subsample or {}
         self.calendar = None
         self.sales = None
         self.prices = None
+
+    def _maybe_subsample_sales_wide(self, sales: pd.DataFrame) -> pd.DataFrame:
+        """Reduce rows of the wide sales table before reshape (major speed/memory win)."""
+        cfg = self.subsample
+        if not cfg or not cfg.get("enabled", False):
+            return sales
+        raw = cfg.get("max_items")
+        if raw is None:
+            return sales
+        n = int(raw)
+        if n <= 0:
+            return sales
+        n = min(n, len(sales))
+        strategy = (cfg.get("strategy") or "head").lower()
+        if strategy == "random":
+            rs = cfg.get("random_seed", 42)
+            out = sales.sample(n=n, random_state=rs).reset_index(drop=True)
+            logger.info("Subsampled sales (random): %s of %s items (seed=%s)", n, len(sales), rs)
+            return out
+        out = sales.head(n).copy()
+        logger.info("Subsampled sales (head): %s of %s items", n, len(sales))
+        return out
         
     def load_calendar(self) -> pd.DataFrame:
         """Load calendar data"""
@@ -162,8 +186,8 @@ class M5DataLoader:
         
         logger.info("Creating base dataset")
         
-        # Reshape sales to long format
-        sales_long = self.reshape_sales_to_long(self.sales, self.calendar)
+        sales_for_long = self._maybe_subsample_sales_wide(self.sales)
+        sales_long = self.reshape_sales_to_long(sales_for_long, self.calendar)
         
         # Merge with calendar
         df = sales_long.merge(

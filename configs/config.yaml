@@ -6,6 +6,13 @@ data:
   train_size: 0.8
   validation_size: 0.1
   test_size: 0.1
+  # Quick local runs (~few minutes): set enabled true and tune max_items (try 250–500 on a laptop).
+  # Full M5: set enabled false.
+  subsample:
+    enabled: false
+    max_items: 400
+    strategy: head   # head | random
+    random_seed: 42
 
 features:
   lag_features:

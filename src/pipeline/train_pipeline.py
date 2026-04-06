@@ -34,7 +34,8 @@ class TrainingPipeline:
         )
         
         self.data_loader = M5DataLoader(
-            data_path=self.config.get('data', {}).get('raw_data_path', 'data/raw')
+            data_path=self.config.get('data', {}).get('raw_data_path', 'data/raw'),
+            subsample=self.config.get('data', {}).get('subsample'),
         )
         self.feature_engineer = FeatureEngineer(
             config=self.config.get('features', {})
