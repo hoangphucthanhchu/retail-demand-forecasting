@@ -3,6 +3,7 @@ Model training utilities for XGBoost and LightGBM
 """
 import pandas as pd
 import numpy as np
+import inspect
 from typing import Dict, List, Optional, Tuple
 import logging
 import joblib
@@ -66,20 +67,21 @@ class ModelTrainer:
         params = self.xgb_params.copy()
         n_estimators = params.pop('n_estimators', 1000)
         early_stopping_rounds = params.pop('early_stopping_rounds', 50)
-        
-        # Create model
-        model = xgb.XGBRegressor(
-            n_estimators=n_estimators,
-            **params
-        )
-        
-        # Train with early stopping
-        model.fit(
-            X_train, y_train,
-            eval_set=[(X_val, y_val)],
-            early_stopping_rounds=early_stopping_rounds,
-            verbose=False
-        )
+
+        # XGBoost 2.x: early_stopping_rounds belongs on the estimator, not fit().
+        # XGBoost 1.x: often passed to fit(). Support both via signature check.
+        fit_sig = inspect.signature(xgb.XGBRegressor.fit)
+        ctor_kw: Dict = {'n_estimators': n_estimators, **params}
+        if 'early_stopping_rounds' not in fit_sig.parameters:
+            ctor_kw['early_stopping_rounds'] = early_stopping_rounds
+        model = xgb.XGBRegressor(**ctor_kw)
+
+        fit_kw: Dict = {'eval_set': [(X_val, y_val)]}
+        if 'early_stopping_rounds' in fit_sig.parameters:
+            fit_kw['early_stopping_rounds'] = early_stopping_rounds
+        if 'verbose' in fit_sig.parameters:
+            fit_kw['verbose'] = False
+        model.fit(X_train, y_train, **fit_kw)
         
         logger.info(f"XGBoost training completed. Best iteration: {model.best_iteration}")
         self.models['xgboost'] = model
