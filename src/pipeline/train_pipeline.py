@@ -11,6 +11,7 @@ from src.data.loader import M5DataLoader
 from src.features.engineering import FeatureEngineer
 from src.models.trainer import ModelTrainer
 from src.evaluation.metrics import Evaluator
+from src.evaluation.baselines import evaluate_baselines
 from src.utils.config import load_config
 from src.utils.logger import setup_logging
 
@@ -156,8 +157,12 @@ class TrainingPipeline:
         # Train models
         models = self.model_trainer.train_both(X_train, y_train, X_val, y_val)
         
-        # Evaluate on validation set
+        target_col = self.config.get('training', {}).get('target_col', 'demand')
         logger.info("\nValidation Set Performance:")
+        for name, metrics in evaluate_baselines(val_df, self.evaluator, target_col=target_col).items():
+            logger.info(f"\n{name.upper()} (baseline):")
+            for metric, value in metrics.items():
+                logger.info(f"  {metric.upper()}: {value:.4f}")
         for model_name, model in models.items():
             y_pred = self.model_trainer.predict(model_name, X_val)
             metrics = self.evaluator.evaluate(y_val.values, y_pred)
@@ -182,8 +187,14 @@ class TrainingPipeline:
         
         X_test = test_df[feature_cols].fillna(0)
         y_test = test_df['demand']
+        target_col = self.config.get('training', {}).get('target_col', 'demand')
         
         results = {}
+        for name, metrics in evaluate_baselines(test_df, self.evaluator, target_col=target_col).items():
+            results[name] = metrics
+            logger.info(f"\n{name.upper()} Test Performance (baseline):")
+            for metric, value in metrics.items():
+                logger.info(f"  {metric.upper()}: {value:.4f}")
         
         for model_name in self.model_trainer.models.keys():
             y_pred = self.model_trainer.predict(model_name, X_test)
