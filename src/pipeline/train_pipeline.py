@@ -14,6 +14,15 @@ from src.evaluation.metrics import Evaluator
 from src.evaluation.baselines import evaluate_baselines
 from src.utils.config import load_config
 from src.utils.logger import setup_logging
+from src.utils.mlflow_tracking import (
+    active_run,
+    is_mlflow_enabled,
+    log_config_snapshot,
+    log_models_from_trainer,
+    log_nested_metrics,
+    log_searchable_params,
+    log_training_tags,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +37,7 @@ class TrainingPipeline:
         Args:
             config_path: Path to configuration file
         """
+        self._config_path = config_path
         self.config = load_config(config_path)
         setup_logging(
             log_level=self.config.get('logging', {}).get('level', 'INFO'),
@@ -134,7 +144,7 @@ class TrainingPipeline:
         return train_df, val_df, test_df
     
     def train(self, train_df: pd.DataFrame, val_df: pd.DataFrame,
-             feature_cols: list) -> Dict:
+             feature_cols: list) -> Tuple[Dict, Dict]:
         """
         Train models
         
@@ -144,7 +154,7 @@ class TrainingPipeline:
             feature_cols: List of feature column names
             
         Returns:
-            Dictionary with trained models
+            Trained models and validation metrics (baselines + ML models).
         """
         logger.info("Training models...")
         
@@ -158,19 +168,22 @@ class TrainingPipeline:
         models = self.model_trainer.train_both(X_train, y_train, X_val, y_val)
         
         target_col = self.config.get('training', {}).get('target_col', 'demand')
+        val_results: Dict = {}
         logger.info("\nValidation Set Performance:")
         for name, metrics in evaluate_baselines(val_df, self.evaluator, target_col=target_col).items():
+            val_results[name] = metrics
             logger.info(f"\n{name.upper()} (baseline):")
             for metric, value in metrics.items():
                 logger.info(f"  {metric.upper()}: {value:.4f}")
         for model_name, model in models.items():
             y_pred = self.model_trainer.predict(model_name, X_val)
             metrics = self.evaluator.evaluate(y_val.values, y_pred)
+            val_results[model_name] = metrics
             logger.info(f"\n{model_name.upper()}:")
             for metric, value in metrics.items():
                 logger.info(f"  {metric.upper()}: {value:.4f}")
         
-        return models
+        return models, val_results
     
     def evaluate(self, test_df: pd.DataFrame, feature_cols: list) -> Dict:
         """
@@ -235,30 +248,51 @@ class TrainingPipeline:
         logger.info("=" * 60)
         logger.info("Starting Training Pipeline")
         logger.info("=" * 60)
-        
-        # Load data
-        df = self.load_data()
-        
-        # Prepare features
-        df, feature_cols = self.prepare_features(df)
-        
-        # Split data
-        train_df, val_df, test_df = self.split_data(
-            df,
-            test_size=self.config.get('training', {}).get('test_size', 28),
-            validation_size=self.config.get('training', {}).get('validation_size', 28)
-        )
-        
-        # Train models
-        models = self.train(train_df, val_df, feature_cols)
-        
-        # Evaluate on test set
-        test_results = self.evaluate(test_df, feature_cols)
-        
-        # Save models
-        self.save_models(
-            models_dir=self.config.get('paths', {}).get('models_dir', 'models')
-        )
+
+        models_dir = self.config.get('paths', {}).get('models_dir', 'models')
+
+        with active_run(self.config, config_path=self._config_path):
+            if is_mlflow_enabled(self.config):
+                log_searchable_params(self.config)
+
+            # Load data
+            df = self.load_data()
+
+            # Prepare features
+            df, feature_cols = self.prepare_features(df)
+
+            # Split data
+            train_df, val_df, test_df = self.split_data(
+                df,
+                test_size=self.config.get('training', {}).get('test_size', 28),
+                validation_size=self.config.get('training', {}).get('validation_size', 28)
+            )
+
+            if is_mlflow_enabled(self.config):
+                log_training_tags(
+                    self.config,
+                    config_path=self._config_path,
+                    n_features=len(feature_cols),
+                    n_train=len(train_df),
+                    n_val=len(val_df),
+                    n_test=len(test_df),
+                )
+                log_config_snapshot(self.config)
+
+            # Train models
+            models, val_results = self.train(train_df, val_df, feature_cols)
+            if is_mlflow_enabled(self.config):
+                log_nested_metrics("val", val_results)
+
+            # Evaluate on test set
+            test_results = self.evaluate(test_df, feature_cols)
+            if is_mlflow_enabled(self.config):
+                log_nested_metrics("test", test_results)
+
+            # Save models
+            self.save_models(models_dir=models_dir)
+            if is_mlflow_enabled(self.config):
+                log_models_from_trainer(self.model_trainer, models_dir)
 
         logger.info("\n" + "=" * 60)
         logger.info("Training Pipeline Completed")

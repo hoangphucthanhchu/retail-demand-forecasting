@@ -3,9 +3,11 @@
 data:
   raw_data_path: "data/raw"
   processed_data_path: "data/processed"
-  train_size: 0.8
-  validation_size: 0.1
-  test_size: 0.1
+
+  # ⚠️ KHÔNG dùng random split cho time series
+  train_size: null
+  validation_size: null
+  test_size: null
 
   subsample:
     enabled: true
@@ -13,13 +15,15 @@ data:
     strategy: random       # tránh bias theo time
     random_seed: 42
 
+
 features:
   lag_features:
-    lags: [1, 7, 14, 28]
+    # ➕ thêm lag dài để bắt seasonality mạnh hơn
+    lags: [1, 7, 14, 28, 56]
 
   rolling_features:
     windows: [7, 14, 28]
-    functions: ["mean", "std"]
+    functions: ["mean", "std", "max"]   # ➕ thêm max để bắt spike
 
   calendar_features:
     - day_of_week
@@ -30,58 +34,76 @@ features:
     - is_month_start
     - is_month_end
 
+
 model:
   xgboost:
     objective: "reg:squarederror"
-    n_estimators: 300
+    eval_metric: "rmse"
+
+    n_estimators: 1000              # ➕ tăng, để early stopping quyết định
     max_depth: 6
     learning_rate: 0.05
+
     subsample: 0.8
     colsample_bytree: 0.8
-    min_child_weight: 3
+
+    min_child_weight: 5             # ⬆ regularization nhẹ
     reg_alpha: 0.1
     reg_lambda: 1.0
+
     random_state: 42
     early_stopping_rounds: 50
-    eval_metric: "rmse"
+
 
   lightgbm:
     objective: "regression"
     metric: "rmse"
-    n_estimators: 300
+
+    n_estimators: 1000              # ➕ giống XGB
     max_depth: -1
     learning_rate: 0.05
+
     subsample: 0.8
     colsample_bytree: 0.8
-    min_child_samples: 20
+
+    min_child_samples: 50           # ⬆ giảm overfit (quan trọng)
+    num_leaves: 64                  # ➕ kiểm soát complexity
+
     reg_alpha: 0.1
     reg_lambda: 1.0
+
     random_state: 42
     early_stopping_rounds: 50
+
 
 training:
   n_splits: 5
   test_size: 28
   validation_size: 28
+
   target_col: "demand"
   id_col: "id"
   date_col: "date"
+
 
 evaluation:
   metrics:
     - rmse
     - mae
-    - mape
-    - wmape
+    - wmape      # ➕ giữ cái này, M5 relevant
+    # ❌ bỏ mape nếu có zero demand
+
 
 paths:
   models_dir: "models"
   logs_dir: "logs"
   results_dir: "results"
 
+
 logging:
   level: "INFO"
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
 
 mlflow:
   enabled: true
