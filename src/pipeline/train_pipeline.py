@@ -4,7 +4,7 @@ Training pipeline for demand forecasting
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 import logging
 
 from src.data.loader import M5DataLoader
@@ -221,8 +221,17 @@ class TrainingPipeline:
             model_path = models_path / f"{model_name}_model.pkl"
             self.model_trainer.save_model(model_name, str(model_path))
     
-    def run(self):
-        """Run complete training pipeline"""
+    def run(
+        self,
+        return_plot_inputs: bool = False,
+    ) -> Union[Tuple[Dict, Dict], Tuple[Dict, Dict, Dict[str, Any]]]:
+        """
+        Run complete training pipeline.
+
+        Args:
+            return_plot_inputs: If True, also return ``test_df`` and ``feature_cols``
+                for notebook plotting (third dict: ``{"test_df", "feature_cols"}``).
+        """
         logger.info("=" * 60)
         logger.info("Starting Training Pipeline")
         logger.info("=" * 60)
@@ -250,11 +259,14 @@ class TrainingPipeline:
         self.save_models(
             models_dir=self.config.get('paths', {}).get('models_dir', 'models')
         )
-        
+
         logger.info("\n" + "=" * 60)
         logger.info("Training Pipeline Completed")
         logger.info("=" * 60)
         
+        if return_plot_inputs:
+            plot_ctx: Dict[str, Any] = {'test_df': test_df, 'feature_cols': feature_cols}
+            return models, test_results, plot_ctx
         return models, test_results
 
 
