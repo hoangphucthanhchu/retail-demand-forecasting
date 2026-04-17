@@ -88,3 +88,5 @@ mlflow:
   enabled: true
   tracking_uri: "file:./mlruns"
   experiment_name: "retail-demand-forecasting"
+  register_models: true
+  registered_model_prefix: "retail_demand"

@@ -292,7 +292,13 @@ class TrainingPipeline:
             # Save models
             self.save_models(models_dir=models_dir)
             if is_mlflow_enabled(self.config):
-                log_models_from_trainer(self.model_trainer, models_dir)
+                ml_input = train_df[feature_cols].fillna(0).head(5)
+                log_models_from_trainer(
+                    self.model_trainer,
+                    models_dir,
+                    self.config,
+                    input_example=ml_input if len(ml_input) > 0 else None,
+                )
 
         logger.info("\n" + "=" * 60)
         logger.info("Training Pipeline Completed")

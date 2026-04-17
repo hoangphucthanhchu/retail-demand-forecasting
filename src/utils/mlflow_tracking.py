@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, Mapping, MutableMapping, Optional
@@ -103,8 +104,43 @@ def log_nested_metrics(prefix: str, results: Mapping[str, Mapping[str, Any]]) ->
             mlflow.log_metric(f"{prefix}_{safe}_{metric_name}", v)
 
 
-def log_models_from_trainer(model_trainer: Any, models_dir: str) -> None:
-    """Register each trained estimator with MLflow using native flavors when possible."""
+def _model_uri_from_log_result(logged: Any, run_id: str, fallback_name: str) -> str:
+    """Prefer URI returned by MLflow 3+ ``log_model`` (often ``models:/...``)."""
+    if logged is None:
+        return f"runs:/{run_id}/{fallback_name}"
+    for attr in ("model_uri", "uri"):
+        uri = getattr(logged, attr, None)
+        if isinstance(uri, str) and uri.strip():
+            return uri.strip()
+    return f"runs:/{run_id}/{fallback_name}"
+
+
+def _mlflow_log_model_name(model_key: str, *, suffix: str = "") -> str:
+    """
+    MLflow 3+ ``log_model(..., name=...)``: no ``/``, ``:``, ``.``, ``%``, quotes.
+    """
+    base = re.sub(r"[^a-zA-Z0-9_-]", "_", f"{model_key}{suffix}".strip("_"))
+    return (base or "model")[:200]
+
+
+def _registry_safe_name(name: str) -> str:
+    """Model Registry name: letters, digits, dash, underscore (no dots for parity with log_model rules)."""
+    s = re.sub(r"[^a-zA-Z0-9_-]", "_", name.strip())
+    return s[:200] if len(s) > 200 else s
+
+
+def log_models_from_trainer(
+    model_trainer: Any,
+    models_dir: str,
+    config: Optional[Mapping[str, Any]] = None,
+    input_example: Optional[Any] = None,
+) -> None:
+    """
+    Log each trained model as a run artifact; optionally register in the Model Registry.
+
+    Pass ``input_example`` (e.g. a few training feature rows) so MLflow can infer a model
+    signature and avoid registry URI mismatches on MLflow 3+.
+    """
     try:
         import mlflow
     except ImportError:
@@ -114,30 +150,78 @@ def log_models_from_trainer(model_trainer: Any, models_dir: str) -> None:
     if not _mlflow_active():
         return
 
+    ml_cfg = (config or {}).get("mlflow") or {}
+    do_register = bool(ml_cfg.get("register_models", False))
+    prefix = (ml_cfg.get("registered_model_prefix") or "retail_demand").strip() or "retail_demand"
+
     models_path = Path(models_dir)
+    run = mlflow.active_run()
+    run_id = run.info.run_id if run else None
+
+    try:
+        store = mlflow.get_tracking_uri() or ""
+        mlflow.set_tag("mlflow_tracking_uri", store[:500])
+    except Exception:
+        store = ""
+
+    log_model_kw: Dict[str, Any] = {}
+    if input_example is not None and getattr(input_example, "__len__", None):
+        try:
+            if len(input_example) > 0:
+                log_model_kw["input_example"] = input_example
+        except TypeError:
+            log_model_kw["input_example"] = input_example
 
     for name, model in model_trainer.models.items():
-        artifact_subpath = f"models/{name}"
+        mlflow_name = _mlflow_log_model_name(str(name))
+        register_path = mlflow_name
+        model_uri_for_registry: Optional[str] = None
         pkl = models_path / f"{name}_model.pkl"
+        flavor_ok = False
         try:
             if name == "xgboost":
                 import mlflow.xgboost
 
-                mlflow.xgboost.log_model(model, artifact_subpath)
+                logged = mlflow.xgboost.log_model(model, name=mlflow_name, **log_model_kw)
+                flavor_ok = True
+                if run_id:
+                    model_uri_for_registry = _model_uri_from_log_result(logged, run_id, mlflow_name)
             elif name == "lightgbm":
                 import mlflow.lightgbm
 
-                mlflow.lightgbm.log_model(model, artifact_subpath)
+                logged = mlflow.lightgbm.log_model(model, name=mlflow_name, **log_model_kw)
+                flavor_ok = True
+                if run_id:
+                    model_uri_for_registry = _model_uri_from_log_result(logged, run_id, mlflow_name)
             else:
                 import mlflow.sklearn
 
-                mlflow.sklearn.log_model(model, artifact_subpath)
+                logged = mlflow.sklearn.log_model(model, name=mlflow_name, **log_model_kw)
+                flavor_ok = True
+                if run_id:
+                    model_uri_for_registry = _model_uri_from_log_result(logged, run_id, mlflow_name)
             logger.info(
-                "MLflow: logged model flavor under run artifacts → %s (see UI: Experiments → run → Artifacts)",
-                artifact_subpath,
+                "MLflow: logged model under run Artifacts → %s (UI: Experiments → this run → Artifacts)",
+                mlflow_name,
             )
         except Exception as e:
-            logger.warning("MLflow log_model failed for %s (%s); logging joblib artifact", name, e)
+            logger.warning("MLflow native log_model failed for %s (%s)", name, e)
+            alt = _mlflow_log_model_name(str(name), suffix="_sklearn")
+            try:
+                import mlflow.sklearn
+
+                logged = mlflow.sklearn.log_model(model, name=alt, **log_model_kw)
+                register_path = alt
+                flavor_ok = True
+                if run_id:
+                    model_uri_for_registry = _model_uri_from_log_result(logged, run_id, alt)
+                logger.info(
+                    "MLflow: sklearn flavor logged for %s → %s (native flavor failed; model still loadable)",
+                    name,
+                    alt,
+                )
+            except Exception as e2:
+                logger.warning("MLflow sklearn fallback log_model also failed for %s: %s", name, e2)
             if pkl.is_file():
                 mlflow.log_artifact(str(pkl), artifact_path="joblib_checkpoints")
         if pkl.is_file():
@@ -145,6 +229,45 @@ def log_models_from_trainer(model_trainer: Any, models_dir: str) -> None:
                 mlflow.log_artifact(str(pkl), artifact_path="pickles")
             except Exception as e:
                 logger.warning("MLflow: could not attach pickle for %s: %s", name, e)
+
+        if do_register and run_id:
+            if not flavor_ok:
+                logger.warning(
+                    "MLflow: skip Model Registry for %s (no MLflow model flavor logged). "
+                    "Install matching mlflow/xgboost/lightgbm or check errors above.",
+                    name,
+                )
+            else:
+                reg_name = _registry_safe_name(f"{prefix}_{name}")
+                model_uri = model_uri_for_registry or f"runs:/{run_id}/{register_path}"
+                try:
+                    result = mlflow.register_model(model_uri=model_uri, name=reg_name)
+                    ver = getattr(result, "version", None) or getattr(result, "model_version", None)
+                    logger.info(
+                        "MLflow: registered %s version=%s (UI: left sidebar → Models). uri=%s",
+                        reg_name,
+                        ver,
+                        model_uri,
+                    )
+                    try:
+                        mlflow.set_tag(f"registry_{name}", f"{reg_name}:v{ver}" if ver else reg_name)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.warning(
+                        "MLflow register_model failed for %s (%s). uri=%s",
+                        reg_name,
+                        e,
+                        model_uri,
+                    )
+        elif do_register and not run_id:
+            logger.warning("MLflow: register_models is true but no active run_id; skipping registry")
+
+    if store:
+        logger.info(
+            'MLflow: open UI on the SAME store, e.g. mlflow ui --backend-store-uri "%s"',
+            store,
+        )
 
 
 def log_config_snapshot(config: MutableMapping[str, Any]) -> None:
