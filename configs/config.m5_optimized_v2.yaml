@@ -17,6 +17,7 @@ data:
 
 
 features:
+  feature_version: "feat_m5"
   lag_features:
     # ➕ thêm lag dài để bắt seasonality mạnh hơn
     lags: [1, 7, 14, 28, 56]

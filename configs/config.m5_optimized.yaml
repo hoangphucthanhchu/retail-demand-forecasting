@@ -14,6 +14,7 @@ data:
     random_seed: 42
 
 features:
+  feature_version: "feat_m5"
   lag_features:
     lags: [1, 7, 14, 28]
 

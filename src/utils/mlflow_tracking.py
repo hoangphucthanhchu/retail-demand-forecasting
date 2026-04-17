@@ -6,6 +6,7 @@ an ``mlflow`` block leave behavior unchanged.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from contextlib import contextmanager
@@ -15,6 +16,22 @@ from typing import Any, Dict, Iterator, Mapping, MutableMapping, Optional
 from src.utils.config import infer_project_root
 
 logger = logging.getLogger(__name__)
+
+
+def effective_feature_version(config: Mapping[str, Any]) -> str:
+    """
+    Human ``features.feature_version`` from config if set; otherwise a stable
+    short fingerprint of the ``features`` block (excluding ``feature_version``).
+    """
+    feats = config.get("features") or {}
+    if not isinstance(feats, dict):
+        return "none"
+    explicit = feats.get("feature_version")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    for_hash = {k: v for k, v in feats.items() if k != "feature_version"}
+    canonical = json.dumps(for_hash, sort_keys=True, default=str)
+    return "auto-" + hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
 
 def is_mlflow_enabled(config: Mapping[str, Any]) -> bool:
@@ -166,6 +183,9 @@ def log_training_tags(
         name = Path(config_path).name
         mlflow.set_tag("config_name", name)
         mlflow.log_param("config_name", name)
+    fv = effective_feature_version(config)
+    mlflow.set_tag("feature_version", fv)
+    mlflow.log_param("feature_version", fv)
     mlflow.set_tag("n_features", str(n_features))
     mlflow.set_tag("n_train_rows", str(n_train))
     mlflow.set_tag("n_val_rows", str(n_val))
