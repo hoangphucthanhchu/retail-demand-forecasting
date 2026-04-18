@@ -1,26 +1,31 @@
-# Configuration file for Demand Forecasting Project
+# Optimized Configuration for M5 Demand Forecasting
 
 data:
   raw_data_path: "data/raw"
   processed_data_path: "data/processed"
-  train_size: 0.8
-  validation_size: 0.1
-  test_size: 0.1
-  # Quick local runs (~few minutes): set enabled true and tune max_items (try 250–500 on a laptop).
-  # Full M5: set enabled false.
+
+  # ⚠️ KHÔNG dùng random split cho time series
+  train_size: null
+  validation_size: null
+  test_size: null
+
   subsample:
-    enabled: false
-    max_items: 400
-    strategy: head   # head | random
+    enabled: true
+    max_items: 1000        # tăng từ 400 → đủ học pattern
+    strategy: random       # tránh bias theo time
     random_seed: 42
+
 
 features:
   feature_version: "feat_m5"
   lag_features:
-    lags: [1, 7, 14, 28, 30, 60, 90]
+    # ➕ thêm lag dài để bắt seasonality mạnh hơn
+    lags: [1, 7, 14, 28, 56]
+
   rolling_features:
-    windows: [7, 14, 28, 30, 60, 90]
-    functions: ["mean", "std", "min", "max"]
+    windows: [7, 14, 28]
+    functions: ["mean", "std", "max"]   # ➕ thêm max để bắt spike
+
   calendar_features:
     - day_of_week
     - day_of_month
@@ -30,58 +35,76 @@ features:
     - is_month_start
     - is_month_end
 
+
 model:
   xgboost:
     objective: "reg:squarederror"
-    n_estimators: 1000
-    max_depth: 8
-    learning_rate: 0.01
-    subsample: 0.8
-    colsample_bytree: 0.8
-    min_child_weight: 3
-    reg_alpha: 0.1
-    reg_lambda: 1.0
-    random_state: 42
-    early_stopping_rounds: 50
     eval_metric: "rmse"
-  
-  lightgbm:
-    objective: "regression"
-    metric: "rmse"
-    n_estimators: 1000
-    max_depth: 8
-    learning_rate: 0.01
+
+    n_estimators: 1000              # ➕ tăng, để early stopping quyết định
+    max_depth: 6
+    learning_rate: 0.05
+
     subsample: 0.8
     colsample_bytree: 0.8
-    min_child_samples: 20
+
+    min_child_weight: 5             # ⬆ regularization nhẹ
     reg_alpha: 0.1
     reg_lambda: 1.0
+
     random_state: 42
     early_stopping_rounds: 50
 
+
+  lightgbm:
+    objective: "regression"
+    metric: "rmse"
+
+    n_estimators: 1000              # ➕ giống XGB
+    max_depth: -1
+    learning_rate: 0.05
+
+    subsample: 0.8
+    colsample_bytree: 0.8
+
+    min_child_samples: 50           # ⬆ giảm overfit (quan trọng)
+    num_leaves: 64                  # ➕ kiểm soát complexity
+
+    reg_alpha: 0.1
+    reg_lambda: 1.0
+
+    random_state: 42
+    early_stopping_rounds: 50
+
+
 training:
   n_splits: 5
-  test_size: 28  # days for M5 competition
+  test_size: 28
   validation_size: 28
+
   target_col: "demand"
   id_col: "id"
   date_col: "date"
+
 
 evaluation:
   metrics:
     - rmse
     - mae
-    - mape
-    - wmape
+    - wmape      # ➕ giữ cái này, M5 relevant
+    # ❌ bỏ mape nếu có zero demand
+
 
 paths:
   models_dir: "models"
   logs_dir: "logs"
   results_dir: "results"
 
+
 logging:
   level: "INFO"
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
 
 mlflow:
   enabled: true

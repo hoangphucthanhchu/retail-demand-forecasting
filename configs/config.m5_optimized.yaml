@@ -14,6 +14,7 @@ data:
     random_seed: 42
 
 features:
+  feature_version: "feat_m5"
   lag_features:
     lags: [1, 7, 14, 28]
 
@@ -82,3 +83,10 @@ paths:
 logging:
   level: "INFO"
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+mlflow:
+  enabled: true
+  tracking_uri: "file:./mlruns"
+  experiment_name: "retail-demand-forecasting"
+  register_models: true
+  registered_model_prefix: "retail_demand"

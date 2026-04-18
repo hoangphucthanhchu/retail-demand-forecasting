@@ -54,7 +54,8 @@ logs/
 .DS_Store
 Thumbs.db
 
-# MLflow
+# MLflow (any location, e.g. legacy notebooks/mlruns)
+**/mlruns/
 mlruns/
 
 # Testing
